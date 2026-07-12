@@ -44,6 +44,7 @@ const client = new Client({
 });
 
 const postedRequests = new Map();
+let syncRunning = false;
 
 function formatChips(value) {
     const n = Number(value || 0);
@@ -187,30 +188,158 @@ function requestMessage(request) {
     };
 }
 
-async function syncRequests() {
+function auditEventMessage(event) {
+    if (event.type === "banker-grant") {
+        const sourceLabels = {
+            "manual-grant": "Manual banker grant",
+            "approved-request": "Approved in userapp",
+            "discord-approved-request": "Approved through Discord"
+        };
+
+        return {
+            embeds: [
+                new EmbedBuilder()
+                    .setColor(0x2ecc71)
+                    .setTitle("Casino Chips Given")
+                    .addFields(
+                        {
+                            name: "Player",
+                            value:
+                                `${event.playerName || "Player"}\n` +
+                                `User ID: \`${event.playerId}\``,
+                            inline: true
+                        },
+                        {
+                            name: "Amount Given",
+                            value:
+                                `**${formatChips(event.amount)} chips**`,
+                            inline: true
+                        },
+                        {
+                            name: "New Balance",
+                            value:
+                                `${formatChips(event.newBalance)} chips`,
+                            inline: true
+                        },
+                        {
+                            name: "Source",
+                            value:
+                                sourceLabels[event.source] ||
+                                event.source ||
+                                "Banker grant",
+                            inline: false
+                        }
+                    )
+                    .setFooter({
+                        text: `Event ID: ${event.eventId}`
+                    })
+                    .setTimestamp(
+                        new Date(event.createdAt || Date.now())
+                    )
+            ]
+        };
+    }
+
+    if (event.type === "withdrawal-request") {
+        return {
+            embeds: [
+                new EmbedBuilder()
+                    .setColor(0xe67e22)
+                    .setTitle(
+                        event.updated
+                            ? "Chip Withdrawal Request Updated"
+                            : "New Chip Withdrawal Request"
+                    )
+                    .addFields(
+                        {
+                            name: "Player",
+                            value:
+                                `${event.playerName || "Player"}\n` +
+                                `User ID: \`${event.playerId}\``,
+                            inline: true
+                        },
+                        {
+                            name: "Wants to Withdraw",
+                            value:
+                                `**${formatChips(event.amount)} chips**`,
+                            inline: true
+                        },
+                        {
+                            name: "Current Balance",
+                            value:
+                                `${formatChips(event.currentBalance)} chips`,
+                            inline: true
+                        }
+                    )
+                    .setFooter({
+                        text:
+                            `Withdrawal ID: ${event.withdrawalRequestId}`
+                    })
+                    .setTimestamp(
+                        new Date(event.createdAt || Date.now())
+                    )
+            ]
+        };
+    }
+
+    if (event.type === "withdrawal-completed") {
+        return {
+            embeds: [
+                new EmbedBuilder()
+                    .setColor(0x3498db)
+                    .setTitle("Chip Withdrawal Completed")
+                    .addFields(
+                        {
+                            name: "Player",
+                            value:
+                                `${event.playerName || "Player"}\n` +
+                                `User ID: \`${event.playerId}\``,
+                            inline: true
+                        },
+                        {
+                            name: "Chips Removed",
+                            value:
+                                `**${formatChips(event.amount)} chips**`,
+                            inline: true
+                        },
+                        {
+                            name: "New Balance",
+                            value:
+                                `${formatChips(event.newBalance)} chips`,
+                            inline: true
+                        }
+                    )
+                    .setTimestamp(
+                        new Date(event.createdAt || Date.now())
+                    )
+            ]
+        };
+    }
+
+    return null;
+}
+
+async function getChannel() {
     const channel = await client.channels.fetch(
         DISCORD_CHANNEL_ID
     );
 
-    if (
-        !channel ||
-        !channel.isTextBased()
-    ) {
+    if (!channel || !channel.isTextBased()) {
         throw new Error(
             "DISCORD_CHANNEL_ID is not a text channel"
         );
     }
 
+    return channel;
+}
+
+async function syncRequests(channel) {
     const data = await backendRequest(
         "/discord/chips/requests"
     );
 
     for (const request of data.requests) {
-        if (
-            postedRequests.has(
-                request.requestId
-            )
-        ) {
+        if (postedRequests.has(request.requestId)) {
             continue;
         }
 
@@ -225,15 +354,62 @@ async function syncRequests() {
     }
 }
 
+async function syncAuditEvents(channel) {
+    const data = await backendRequest(
+        "/discord/chips/events"
+    );
+
+    for (const event of data.events || []) {
+        const payload = auditEventMessage(event);
+
+        if (!payload) {
+            await backendRequest(
+                "/discord/chips/event-ack",
+                {
+                    method: "POST",
+                    body: { eventId: event.eventId }
+                }
+            );
+            continue;
+        }
+
+        const message = await channel.send(payload);
+
+        await backendRequest(
+            "/discord/chips/event-ack",
+            {
+                method: "POST",
+                body: {
+                    eventId: event.eventId,
+                    discordMessageId: message.id
+                }
+            }
+        );
+    }
+}
+
+async function syncAll() {
+    if (syncRunning) return;
+    syncRunning = true;
+
+    try {
+        const channel = await getChannel();
+        await syncRequests(channel);
+        await syncAuditEvents(channel);
+    } finally {
+        syncRunning = false;
+    }
+}
+
 client.once("ready", async () => {
     console.log(
         `Logged in as ${client.user.tag}`
     );
 
-    await syncRequests().catch(console.error);
+    await syncAll().catch(console.error);
 
     setInterval(
-        () => syncRequests().catch(console.error),
+        () => syncAll().catch(console.error),
         Math.max(
             10,
             Number(POLL_INTERVAL_SECONDS) || 15
@@ -325,6 +501,10 @@ client.on(
             });
 
             postedRequests.delete(requestId);
+
+            // Pull the audit event immediately rather than waiting
+            // for the next polling interval.
+            await syncAll().catch(console.error);
         } catch (error) {
             console.error(error);
 
