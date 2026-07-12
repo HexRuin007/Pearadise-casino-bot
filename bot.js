@@ -241,6 +241,23 @@ function auditEventMessage(event) {
     }
 
     if (event.type === "withdrawal-request") {
+        const row =
+            new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(
+                        `withdrawal:complete:${event.withdrawalRequestId}`
+                    )
+                    .setLabel("Completed")
+                    .setEmoji("✅")
+                    .setStyle(ButtonStyle.Success),
+                new ButtonBuilder()
+                    .setCustomId(
+                        `withdrawal:deny:${event.withdrawalRequestId}`
+                    )
+                    .setLabel("Deny")
+                    .setStyle(ButtonStyle.Danger)
+            );
+
         return {
             embeds: [
                 new EmbedBuilder()
@@ -278,7 +295,8 @@ function auditEventMessage(event) {
                     .setTimestamp(
                         new Date(event.createdAt || Date.now())
                     )
-            ]
+            ],
+            components: [row]
         };
     }
 
@@ -422,25 +440,124 @@ client.on(
     async interaction => {
         if (!interaction.isButton()) return;
 
-        const match =
+        const chipMatch =
             interaction.customId.match(
                 /^chips:(approve|deny):([a-f0-9]+)$/
             );
 
-        if (!match) return;
+        const withdrawalMatch =
+            interaction.customId.match(
+                /^withdrawal:(complete|deny):([a-f0-9]+)$/
+            );
+
+        if (!chipMatch && !withdrawalMatch) {
+            return;
+        }
 
         if (!canApprove(interaction)) {
             await interaction.reply({
                 content:
-                    "You do not have permission to handle chip requests.",
+                    "You do not have permission to handle casino requests.",
                 ephemeral: true
             });
             return;
         }
 
-        const [, action, requestId] = match;
-
         await interaction.deferUpdate();
+
+        if (withdrawalMatch) {
+            const [, action, withdrawalRequestId] =
+                withdrawalMatch;
+
+            try {
+                const result = await backendRequest(
+                    action === "complete"
+                        ? "/discord/chips/withdrawal-complete"
+                        : "/discord/chips/withdrawal-deny",
+                    {
+                        method: "POST",
+                        body: {
+                            withdrawalRequestId,
+                            discordUserId:
+                                interaction.user.id,
+                            discordDisplayName:
+                                interaction.user.tag
+                        }
+                    }
+                );
+
+                const completed =
+                    action === "complete";
+
+                const embed =
+                    EmbedBuilder.from(
+                        interaction.message.embeds[0]
+                    )
+                        .setColor(
+                            completed
+                                ? 0x2ecc71
+                                : 0xe74c3c
+                        )
+                        .setTitle(
+                            completed
+                                ? "Withdrawal Completed"
+                                : "Withdrawal Denied"
+                        )
+                        .addFields({
+                            name: "Handled By",
+                            value:
+                                `${interaction.user.tag}\n` +
+                                `<@${interaction.user.id}>`,
+                            inline: false
+                        });
+
+                if (completed) {
+                    embed.addFields(
+                        {
+                            name: "Chips Removed",
+                            value:
+                                `**${formatChips(
+                                    result.amountRemoved
+                                )} chips**`,
+                            inline: true
+                        },
+                        {
+                            name: "Remaining Balance",
+                            value:
+                                `${formatChips(
+                                    result.newBalance
+                                )} chips`,
+                            inline: true
+                        }
+                    );
+                } else {
+                    embed.addFields({
+                        name: "Decision",
+                        value:
+                            "No chips were removed from the player's balance.",
+                        inline: false
+                    });
+                }
+
+                await interaction.message.edit({
+                    embeds: [embed],
+                    components: []
+                });
+            } catch (error) {
+                console.error(error);
+
+                await interaction.followUp({
+                    content:
+                        `Could not ${action} withdrawal: ` +
+                        error.message,
+                    ephemeral: true
+                });
+            }
+
+            return;
+        }
+
+        const [, action, requestId] = chipMatch;
 
         try {
             const result = await backendRequest(
@@ -502,8 +619,6 @@ client.on(
 
             postedRequests.delete(requestId);
 
-            // Pull the audit event immediately rather than waiting
-            // for the next polling interval.
             await syncAll().catch(console.error);
         } catch (error) {
             console.error(error);
