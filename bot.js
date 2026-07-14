@@ -286,6 +286,50 @@ function auditEventMessage(event) {
         };
     }
 
+    if (event.type === "player-reset") {
+        return {
+            embeds: [
+                new EmbedBuilder()
+                    .setColor(0xe74c3c)
+                    .setTitle("Casino Player Reset")
+                    .addFields(
+                        {
+                            name: "Player Reset",
+                            value:
+                                `${event.playerName || "Player"}\n` +
+                                `User ID: \`${event.playerId}\``,
+                            inline: true
+                        },
+                        {
+                            name: "Previous Balance",
+                            value:
+                                `**${formatChips(event.previousBalance)} chips**`,
+                            inline: true
+                        },
+                        {
+                            name: "Reset By",
+                            value:
+                                `${event.resetByName || "Banker"}\n` +
+                                `User ID: \`${event.resetById || "Unknown"}\``,
+                            inline: true
+                        },
+                        {
+                            name: "Result",
+                            value:
+                                "The player's casino balance, statistics, requests, active games and eligible rewards were cleared.",
+                            inline: false
+                        }
+                    )
+                    .setFooter({
+                        text: `Event ID: ${event.eventId}`
+                    })
+                    .setTimestamp(
+                        new Date(event.createdAt || Date.now())
+                    )
+            ]
+        };
+    }
+
     if (event.type === "withdrawal-request") {
         const row =
             new ActionRowBuilder().addComponents(
@@ -332,6 +376,16 @@ function auditEventMessage(event) {
                             value:
                                 `${formatChips(event.currentBalance)} chips`,
                             inline: true
+                        },
+                        {
+                            name: "Banker Chips Since Last Withdrawal Request",
+                            value:
+                                event.bankerGrantedSinceLastWithdrawal
+                                    ? `✅ Yes — ${formatChips(event.bankerGrantAmountSinceLastWithdrawal)} chips across ${event.bankerGrantCountSinceLastWithdrawal || 1} grant(s)`
+                                    : event.hadPreviousWithdrawalRequest
+                                        ? "❌ No banker grants since the previous withdrawal request"
+                                        : "ℹ️ No previous withdrawal request found; no banker grants recorded in the available history",
+                            inline: false
                         }
                     )
                     .setFooter({
