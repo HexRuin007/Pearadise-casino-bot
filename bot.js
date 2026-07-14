@@ -170,10 +170,18 @@ function requestMessage(request) {
         new ActionRowBuilder().addComponents(
             new ButtonBuilder()
                 .setCustomId(
-                    `chips:approve:${request.requestId}`
+                    `chips:approve-paid:${request.requestId}`
                 )
-                .setLabel("Approve")
+                .setLabel("Approve Paid")
+                .setEmoji("💷")
                 .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+                .setCustomId(
+                    `chips:approve-free:${request.requestId}`
+                )
+                .setLabel("Approve Free")
+                .setEmoji("🎁")
+                .setStyle(ButtonStyle.Primary),
             new ButtonBuilder()
                 .setCustomId(
                     `chips:deny:${request.requestId}`
@@ -186,6 +194,83 @@ function requestMessage(request) {
         embeds: [embed],
         components: [row]
     };
+}
+
+function withdrawalGrantBreakdown(event) {
+    if (!event.bankerGrantedSinceLastWithdrawal) {
+        return event.hadPreviousWithdrawalRequest
+            ? "❌ No banker grants since the previous withdrawal request"
+            : "ℹ️ No previous withdrawal request found; no banker grants recorded in the available history";
+    }
+
+    const lines = [];
+
+    const paidAmount = Number(
+        event.paidBankerGrantAmountSinceLastWithdrawal || 0
+    );
+    const freeAmount = Number(
+        event.freeBankerGrantAmountSinceLastWithdrawal || 0
+    );
+    const unclassifiedAmount = Number(
+        event.unclassifiedBankerGrantAmountSinceLastWithdrawal || 0
+    );
+
+    const paidCount = Number(
+        event.paidBankerGrantCountSinceLastWithdrawal || 0
+    );
+    const freeCount = Number(
+        event.freeBankerGrantCountSinceLastWithdrawal || 0
+    );
+    const unclassifiedCount = Number(
+        event.unclassifiedBankerGrantCountSinceLastWithdrawal || 0
+    );
+
+    if (paidAmount > 0 || paidCount > 0) {
+        lines.push(
+            `💷 **Paid:** ${formatChips(paidAmount)} chips ` +
+            `across ${paidCount} grant(s)`
+        );
+    }
+
+    if (freeAmount > 0 || freeCount > 0) {
+        lines.push(
+            `🎁 **Free:** ${formatChips(freeAmount)} chips ` +
+            `across ${freeCount} grant(s)`
+        );
+    }
+
+    if (unclassifiedAmount > 0 || unclassifiedCount > 0) {
+        lines.push(
+            `ℹ️ **Older/unclassified:** ` +
+            `${formatChips(unclassifiedAmount)} chips ` +
+            `across ${unclassifiedCount} grant(s)`
+        );
+    }
+
+    if (lines.length === 0) {
+        lines.push(
+            `✅ Banker grants found: ` +
+            `${formatChips(event.bankerGrantAmountSinceLastWithdrawal)} chips ` +
+            `across ${event.bankerGrantCountSinceLastWithdrawal || 1} grant(s)`
+        );
+    }
+
+    const classificationLabels = {
+        paid: "Paid only",
+        free: "Free only",
+        mixed: "Mixed paid and free",
+        unclassified: "Older unclassified grants",
+        none: "No banker grants"
+    };
+
+    lines.unshift(
+        `**Classification:** ${
+            classificationLabels[event.bankerGrantClassification] ||
+            "Banker grants recorded"
+        }`
+    );
+
+    return lines.join("\n");
 }
 
 function auditEventMessage(event) {
@@ -220,6 +305,16 @@ function auditEventMessage(event) {
                             value:
                                 `${formatChips(event.newBalance)} chips`,
                             inline: true
+                        },
+                        {
+                            name: "Grant Type",
+                            value:
+                                event.grantType === "free"
+                                    ? "🎁 **Free chips** — the player did not pay"
+                                    : event.grantType === "paid"
+                                        ? "💷 **Paid chips** — the player paid for these chips"
+                                        : "ℹ️ **Unclassified** — older grant without a saved type",
+                            inline: false
                         },
                         {
                             name: "Source",
@@ -380,11 +475,7 @@ function auditEventMessage(event) {
                         {
                             name: "Banker Chips Since Last Withdrawal Request",
                             value:
-                                event.bankerGrantedSinceLastWithdrawal
-                                    ? `✅ Yes — ${formatChips(event.bankerGrantAmountSinceLastWithdrawal)} chips across ${event.bankerGrantCountSinceLastWithdrawal || 1} grant(s)`
-                                    : event.hadPreviousWithdrawalRequest
-                                        ? "❌ No banker grants since the previous withdrawal request"
-                                        : "ℹ️ No previous withdrawal request found; no banker grants recorded in the available history",
+                                withdrawalGrantBreakdown(event),
                             inline: false
                         }
                     )
@@ -542,7 +633,7 @@ client.on(
 
         const chipMatch =
             interaction.customId.match(
-                /^chips:(approve|deny):([a-f0-9]+)$/
+                /^chips:(approve-paid|approve-free|deny):([a-f0-9]+)$/
             );
 
         const withdrawalMatch =
@@ -722,15 +813,24 @@ client.on(
 
         const [, action, requestId] = chipMatch;
 
+        const approving = action !== "deny";
+        const grantType =
+            action === "approve-free"
+                ? "free"
+                : "paid";
+
         try {
             const result = await backendRequest(
-                action === "approve"
+                approving
                     ? "/discord/chips/approve"
                     : "/discord/chips/deny",
                 {
                     method: "POST",
                     body: {
                         requestId,
+                        grantType: approving
+                            ? grantType
+                            : undefined,
                         discordUserId:
                             interaction.user.id,
                         discordDisplayName:
@@ -744,13 +844,17 @@ client.on(
                     interaction.message.embeds[0]
                 )
                     .setColor(
-                        action === "approve"
-                            ? 0x2ecc71
+                        approving
+                            ? grantType === "free"
+                                ? 0x3498db
+                                : 0x2ecc71
                             : 0xe74c3c
                     )
                     .setTitle(
-                        action === "approve"
-                            ? "Chip Request Approved"
+                        approving
+                            ? grantType === "free"
+                                ? "Chip Request Approved as Free"
+                                : "Chip Request Approved as Paid"
                             : "Chip Request Denied"
                     )
                     .addFields({
@@ -761,8 +865,19 @@ client.on(
                         inline: false
                     });
 
+            if (approving) {
+                embed.addFields({
+                    name: "Grant Type",
+                    value:
+                        grantType === "free"
+                            ? "🎁 Free chips — the player did not pay"
+                            : "💷 Paid chips — the player paid for these chips",
+                    inline: false
+                });
+            }
+
             if (
-                action === "approve" &&
+                approving &&
                 result.newBalance !== undefined
             ) {
                 embed.addFields({
