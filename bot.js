@@ -146,6 +146,14 @@ function requestMessage(request) {
                 inline: true
             },
             {
+                name: "Requested Type",
+                value:
+                    request.requestType === "free"
+                        ? "🎁 **Free chips**"
+                        : "💷 **Paid chips**",
+                inline: true
+            },
+            {
                 name: "Current Balance",
                 value:
                     `${formatChips(
@@ -166,22 +174,26 @@ function requestMessage(request) {
             )
         );
 
+    const requestedType =
+        request.requestType === "free" ? "free" : "paid";
+
     const row =
         new ActionRowBuilder().addComponents(
             new ButtonBuilder()
                 .setCustomId(
-                    `chips:approve-paid:${request.requestId}`
+                    `chips:approve-${requestedType}:${request.requestId}`
                 )
-                .setLabel("Approve Paid")
-                .setEmoji("💷")
-                .setStyle(ButtonStyle.Success),
-            new ButtonBuilder()
-                .setCustomId(
-                    `chips:approve-free:${request.requestId}`
+                .setLabel(
+                    requestedType === "free"
+                        ? "Approve Free"
+                        : "Approve Paid"
                 )
-                .setLabel("Approve Free")
-                .setEmoji("🎁")
-                .setStyle(ButtonStyle.Primary),
+                .setEmoji(requestedType === "free" ? "🎁" : "💷")
+                .setStyle(
+                    requestedType === "free"
+                        ? ButtonStyle.Primary
+                        : ButtonStyle.Success
+                ),
             new ButtonBuilder()
                 .setCustomId(
                     `chips:deny:${request.requestId}`
