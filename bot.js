@@ -23,14 +23,11 @@ for (const [name, value] of Object.entries({
     CASINO_BACKEND_URL
 })) {
     if (!value) {
-        throw new Error(
-            `Missing environment variable: ${name}`
-        );
+        throw new Error(`Missing environment variable: ${name}`);
     }
 }
 
-const backendUrl =
-    CASINO_BACKEND_URL.replace(/\/+$/, "");
+const backendUrl = CASINO_BACKEND_URL.replace(/\/+$/, "");
 
 const approverRoleIds = new Set(
     DISCORD_APPROVER_ROLE_IDS
@@ -43,7 +40,8 @@ const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
-const postedRequests = new Map();
+const postedRequests = new Map();      // chip requestId -> discord message id
+const postedWithdrawals = new Map();   // withdrawalRequestId -> discord message id
 let syncRunning = false;
 
 function formatChips(value) {
@@ -51,9 +49,7 @@ function formatChips(value) {
     const abs = Math.abs(n);
 
     const format = (divisor, suffix) =>
-        `${(n / divisor)
-            .toFixed(2)
-            .replace(/\.?0+$/, "")}${suffix}`;
+        `${(n / divisor).toFixed(2).replace(/\.?0+$/, "")}${suffix}`;
 
     if (abs >= 1e15) return format(1e15, "Q");
     if (abs >= 1e12) return format(1e12, "T");
@@ -64,41 +60,23 @@ function formatChips(value) {
     return Math.floor(n).toLocaleString("en-GB");
 }
 
-async function backendRequest(
-    endpoint,
-    {
-        method = "GET",
-        body
-    } = {}
-) {
-    const response = await fetch(
-        `${backendUrl}${endpoint}`,
-        {
-            method,
-            headers: {
-                "Content-Type": "application/json",
-                "X-Discord-Bot-Secret":
-                    DISCORD_BOT_SECRET
-            },
-            body:
-                body === undefined
-                    ? undefined
-                    : JSON.stringify(body)
-        }
-    );
+async function backendRequest(endpoint, { method = "GET", body } = {}) {
+    const response = await fetch(`${backendUrl}${endpoint}`, {
+        method,
+        headers: {
+            "Content-Type": "application/json",
+            "X-Discord-Bot-Secret": DISCORD_BOT_SECRET
+        },
+        body: body === undefined ? undefined : JSON.stringify(body)
+    });
 
-    const data = await response.json().catch(
-        () => ({
-            ok: false,
-            error: `HTTP ${response.status}`
-        })
-    );
+    const data = await response.json().catch(() => ({
+        ok: false,
+        error: `HTTP ${response.status}`
+    }));
 
     if (!response.ok || !data.ok) {
-        throw new Error(
-            data.error ||
-            `Backend request failed (${response.status})`
-        );
+        throw new Error(data.error || `Backend request failed (${response.status})`);
     }
 
     return data;
@@ -108,21 +86,13 @@ function canApprove(interaction) {
     if (!interaction.inGuild()) return false;
 
     if (approverRoleIds.size === 0) {
-        return Boolean(
-            interaction.memberPermissions?.has(
-                "Administrator"
-            )
-        );
+        return Boolean(interaction.memberPermissions?.has("Administrator"));
     }
 
-    const roles =
-        interaction.member?.roles?.cache;
-
+    const roles = interaction.member?.roles?.cache;
     if (!roles) return false;
 
-    return [...approverRoleIds].some(
-        roleId => roles.has(roleId)
-    );
+    return [...approverRoleIds].some(roleId => roles.has(roleId));
 }
 
 function requestMessage(request) {
@@ -132,80 +102,43 @@ function requestMessage(request) {
         .addFields(
             {
                 name: "Player",
-                value:
-                    `${request.playerName}\n` +
-                    `User ID: \`${request.playerId}\``,
+                value: `${request.playerName}\nUser ID: \`${request.playerId}\``,
                 inline: true
             },
             {
                 name: "Requested",
-                value:
-                    `**${formatChips(
-                        request.amount
-                    )} chips**`,
+                value: `**${formatChips(request.amount)} chips**`,
                 inline: true
             },
             {
                 name: "Requested Type",
-                value:
-                    request.requestType === "free"
-                        ? "🎁 **Free chips**"
-                        : "💷 **Paid chips**",
+                value: request.requestType === "free" ? "🎁 **Free chips**" : "💷 **Paid chips**",
                 inline: true
             },
             {
                 name: "Current Balance",
-                value:
-                    `${formatChips(
-                        request.currentBalance
-                    )} chips`,
+                value: `${formatChips(request.currentBalance)} chips`,
                 inline: true
             }
         )
-        .setFooter({
-            text:
-                `Request ID: ${request.requestId}`
-        })
-        .setTimestamp(
-            new Date(
-                request.updatedAt ||
-                request.createdAt ||
-                Date.now()
-            )
-        );
+        .setFooter({ text: `Request ID: ${request.requestId}` })
+        .setTimestamp(new Date(request.updatedAt || request.createdAt || Date.now()));
 
-    const requestedType =
-        request.requestType === "free" ? "free" : "paid";
+    const requestedType = request.requestType === "free" ? "free" : "paid";
 
-    const row =
-        new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId(
-                    `chips:approve-${requestedType}:${request.requestId}`
-                )
-                .setLabel(
-                    requestedType === "free"
-                        ? "Approve Free"
-                        : "Approve Paid"
-                )
-                .setEmoji(requestedType === "free" ? "🎁" : "💷")
-                .setStyle(
-                    requestedType === "free"
-                        ? ButtonStyle.Primary
-                        : ButtonStyle.Success
-                ),
-            new ButtonBuilder()
-                .setCustomId(
-                    `chips:deny:${request.requestId}`
-                )
-                .setLabel("Deny")
-                .setStyle(ButtonStyle.Danger)
-        );
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`chips:approve-${requestedType}:${request.requestId}`)
+            .setLabel(requestedType === "free" ? "Approve Free" : "Approve Paid")
+            .setEmoji(requestedType === "free" ? "🎁" : "💷")
+            .setStyle(requestedType === "free" ? ButtonStyle.Primary : ButtonStyle.Success),
+        new ButtonBuilder()
+            .setCustomId(`chips:deny:${request.requestId}`)
+            .setLabel("Deny")
+            .setStyle(ButtonStyle.Danger)
+    );
 
-    return {
-        embeds: [embed],
-        components: [row]
-    };
+    return { embeds: [embed], components: [row] };
 }
 
 function withdrawalGrantBreakdown(event) {
@@ -217,52 +150,29 @@ function withdrawalGrantBreakdown(event) {
 
     const lines = [];
 
-    const paidAmount = Number(
-        event.paidBankerGrantAmountSinceLastWithdrawal || 0
-    );
-    const freeAmount = Number(
-        event.freeBankerGrantAmountSinceLastWithdrawal || 0
-    );
-    const unclassifiedAmount = Number(
-        event.unclassifiedBankerGrantAmountSinceLastWithdrawal || 0
-    );
+    const paidAmount = Number(event.paidBankerGrantAmountSinceLastWithdrawal || 0);
+    const freeAmount = Number(event.freeBankerGrantAmountSinceLastWithdrawal || 0);
+    const unclassifiedAmount = Number(event.unclassifiedBankerGrantAmountSinceLastWithdrawal || 0);
 
-    const paidCount = Number(
-        event.paidBankerGrantCountSinceLastWithdrawal || 0
-    );
-    const freeCount = Number(
-        event.freeBankerGrantCountSinceLastWithdrawal || 0
-    );
-    const unclassifiedCount = Number(
-        event.unclassifiedBankerGrantCountSinceLastWithdrawal || 0
-    );
+    const paidCount = Number(event.paidBankerGrantCountSinceLastWithdrawal || 0);
+    const freeCount = Number(event.freeBankerGrantCountSinceLastWithdrawal || 0);
+    const unclassifiedCount = Number(event.unclassifiedBankerGrantCountSinceLastWithdrawal || 0);
 
     if (paidAmount > 0 || paidCount > 0) {
-        lines.push(
-            `💷 **Paid:** ${formatChips(paidAmount)} chips ` +
-            `across ${paidCount} grant(s)`
-        );
+        lines.push(`💷 **Paid:** ${formatChips(paidAmount)} chips across ${paidCount} grant(s)`);
     }
 
     if (freeAmount > 0 || freeCount > 0) {
-        lines.push(
-            `🎁 **Free:** ${formatChips(freeAmount)} chips ` +
-            `across ${freeCount} grant(s)`
-        );
+        lines.push(`🎁 **Free:** ${formatChips(freeAmount)} chips across ${freeCount} grant(s)`);
     }
 
     if (unclassifiedAmount > 0 || unclassifiedCount > 0) {
-        lines.push(
-            `ℹ️ **Older/unclassified:** ` +
-            `${formatChips(unclassifiedAmount)} chips ` +
-            `across ${unclassifiedCount} grant(s)`
-        );
+        lines.push(`ℹ️ **Older/unclassified:** ${formatChips(unclassifiedAmount)} chips across ${unclassifiedCount} grant(s)`);
     }
 
     if (lines.length === 0) {
         lines.push(
-            `✅ Banker grants found: ` +
-            `${formatChips(event.bankerGrantAmountSinceLastWithdrawal)} chips ` +
+            `✅ Banker grants found: ${formatChips(event.bankerGrantAmountSinceLastWithdrawal)} chips ` +
             `across ${event.bankerGrantCountSinceLastWithdrawal || 1} grant(s)`
         );
     }
@@ -276,10 +186,7 @@ function withdrawalGrantBreakdown(event) {
     };
 
     lines.unshift(
-        `**Classification:** ${
-            classificationLabels[event.bankerGrantClassification] ||
-            "Banker grants recorded"
-        }`
+        `**Classification:** ${classificationLabels[event.bankerGrantClassification] || "Banker grants recorded"}`
     );
 
     return lines.join("\n");
@@ -301,21 +208,17 @@ function auditEventMessage(event) {
                     .addFields(
                         {
                             name: "Player",
-                            value:
-                                `${event.playerName || "Player"}\n` +
-                                `User ID: \`${event.playerId}\``,
+                            value: `${event.playerName || "Player"}\nUser ID: \`${event.playerId}\``,
                             inline: true
                         },
                         {
                             name: "Amount Given",
-                            value:
-                                `**${formatChips(event.amount)} chips**`,
+                            value: `**${formatChips(event.amount)} chips**`,
                             inline: true
                         },
                         {
                             name: "New Balance",
-                            value:
-                                `${formatChips(event.newBalance)} chips`,
+                            value: `${formatChips(event.newBalance)} chips`,
                             inline: true
                         },
                         {
@@ -330,34 +233,80 @@ function auditEventMessage(event) {
                         },
                         {
                             name: "Source",
-                            value:
-                                sourceLabels[event.source] ||
-                                event.source ||
-                                "Banker grant",
+                            value: sourceLabels[event.source] || event.source || "Banker grant",
                             inline: false
                         }
                     )
-                    .setFooter({
-                        text: `Event ID: ${event.eventId}`
-                    })
-                    .setTimestamp(
-                        new Date(event.createdAt || Date.now())
+                    .setFooter({ text: `Event ID: ${event.eventId}` })
+                    .setTimestamp(new Date(event.createdAt || Date.now()))
+            ]
+        };
+    }
+
+    if (event.type === "chip-request-denied") {
+        return {
+            embeds: [
+                new EmbedBuilder()
+                    .setColor(0xe74c3c)
+                    .setTitle("Chip Request Denied")
+                    .addFields(
+                        {
+                            name: "Player",
+                            value: `${event.playerName || "Player"}\nUser ID: \`${event.playerId}\``,
+                            inline: true
+                        },
+                        {
+                            name: "Requested",
+                            value: `**${formatChips(event.amount)} chips**`,
+                            inline: true
+                        },
+                        {
+                            name: "Handled By",
+                            value: event.handledBy || "Banker",
+                            inline: false
+                        }
                     )
+                    .setTimestamp(new Date(event.createdAt || Date.now()))
+            ]
+        };
+    }
+
+    if (event.type === "withdrawal-denied") {
+        return {
+            embeds: [
+                new EmbedBuilder()
+                    .setColor(0xe74c3c)
+                    .setTitle("Withdrawal Denied")
+                    .addFields(
+                        {
+                            name: "Player",
+                            value: `${event.playerName || "Player"}\nUser ID: \`${event.playerId}\``,
+                            inline: true
+                        },
+                        {
+                            name: "Requested",
+                            value: `**${formatChips(event.amount)} chips**`,
+                            inline: true
+                        },
+                        {
+                            name: "Handled By",
+                            value: event.handledBy || "Banker",
+                            inline: false
+                        }
+                    )
+                    .setTimestamp(new Date(event.createdAt || Date.now()))
             ]
         };
     }
 
     if (event.type === "daily-spin-item") {
-        const row =
-            new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId(
-                        `dailyspin:delivered:${event.deliveryId}`
-                    )
-                    .setLabel("Mark Delivered")
-                    .setEmoji("✅")
-                    .setStyle(ButtonStyle.Success)
-            );
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`dailyspin:delivered:${event.deliveryId}`)
+                .setLabel("Mark Delivered")
+                .setEmoji("✅")
+                .setStyle(ButtonStyle.Success)
+        );
 
         return {
             embeds: [
@@ -367,15 +316,12 @@ function auditEventMessage(event) {
                     .addFields(
                         {
                             name: "Player",
-                            value:
-                                `${event.playerName || "Player"}\n` +
-                                `User ID: \`${event.playerId}\``,
+                            value: `${event.playerName || "Player"}\nUser ID: \`${event.playerId}\``,
                             inline: true
                         },
                         {
                             name: "Prize",
-                            value:
-                                `**${event.quantity || 1}x ${event.itemName || event.prizeLabel}**`,
+                            value: `**${event.quantity || 1}x ${event.itemName || event.prizeLabel}**`,
                             inline: true
                         },
                         {
@@ -384,9 +330,7 @@ function auditEventMessage(event) {
                             inline: false
                         }
                     )
-                    .setFooter({
-                        text: `Delivery ID: ${event.deliveryId}`
-                    })
+                    .setFooter({ text: `Delivery ID: ${event.deliveryId}` })
                     .setTimestamp(new Date(event.createdAt || Date.now()))
             ],
             components: [row]
@@ -402,102 +346,73 @@ function auditEventMessage(event) {
                     .addFields(
                         {
                             name: "Player Reset",
-                            value:
-                                `${event.playerName || "Player"}\n` +
-                                `User ID: \`${event.playerId}\``,
+                            value: `${event.playerName || "Player"}\nUser ID: \`${event.playerId}\``,
                             inline: true
                         },
                         {
                             name: "Previous Balance",
-                            value:
-                                `**${formatChips(event.previousBalance)} chips**`,
+                            value: `**${formatChips(event.previousBalance)} chips**`,
                             inline: true
                         },
                         {
                             name: "Reset By",
-                            value:
-                                `${event.resetByName || "Banker"}\n` +
-                                `User ID: \`${event.resetById || "Unknown"}\``,
+                            value: `${event.resetByName || "Banker"}\nUser ID: \`${event.resetById || "Unknown"}\``,
                             inline: true
                         },
                         {
                             name: "Result",
-                            value:
-                                "The player's casino balance, statistics, requests, active games and eligible rewards were cleared.",
+                            value: "The player's casino balance, statistics, requests, active games and eligible rewards were cleared.",
                             inline: false
                         }
                     )
-                    .setFooter({
-                        text: `Event ID: ${event.eventId}`
-                    })
-                    .setTimestamp(
-                        new Date(event.createdAt || Date.now())
-                    )
+                    .setFooter({ text: `Event ID: ${event.eventId}` })
+                    .setTimestamp(new Date(event.createdAt || Date.now()))
             ]
         };
     }
 
     if (event.type === "withdrawal-request") {
-        const row =
-            new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId(
-                        `withdrawal:complete:${event.withdrawalRequestId}`
-                    )
-                    .setLabel("Completed")
-                    .setEmoji("✅")
-                    .setStyle(ButtonStyle.Success),
-                new ButtonBuilder()
-                    .setCustomId(
-                        `withdrawal:deny:${event.withdrawalRequestId}`
-                    )
-                    .setLabel("Deny")
-                    .setStyle(ButtonStyle.Danger)
-            );
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`withdrawal:complete:${event.withdrawalRequestId}`)
+                .setLabel("Completed")
+                .setEmoji("✅")
+                .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+                .setCustomId(`withdrawal:deny:${event.withdrawalRequestId}`)
+                .setLabel("Deny")
+                .setStyle(ButtonStyle.Danger)
+        );
 
         return {
             embeds: [
                 new EmbedBuilder()
                     .setColor(0xe67e22)
-                    .setTitle(
-                        event.updated
-                            ? "Chip Withdrawal Request Updated"
-                            : "New Chip Withdrawal Request"
-                    )
+                    .setTitle(event.updated ? "Chip Withdrawal Request Updated" : "New Chip Withdrawal Request")
                     .addFields(
                         {
                             name: "Player",
-                            value:
-                                `${event.playerName || "Player"}\n` +
-                                `User ID: \`${event.playerId}\``,
+                            value: `${event.playerName || "Player"}\nUser ID: \`${event.playerId}\``,
                             inline: true
                         },
                         {
                             name: "Wants to Withdraw",
-                            value:
-                                `**${formatChips(event.amount)} chips**`,
+                            value: `**${formatChips(event.amount)} chips**`,
                             inline: true
                         },
                         {
                             name: "Current Balance",
-                            value:
-                                `${formatChips(event.currentBalance)} chips`,
+                            value: `${formatChips(event.currentBalance)} chips`,
                             inline: true
                         },
                         {
                             name: "Banker Chips Since Last Withdrawal Request",
-                            value:
-                                withdrawalGrantBreakdown(event),
+                            value: withdrawalGrantBreakdown(event),
                             inline: false
                         }
                     )
-                    .setFooter({
-                        text:
-                            `Withdrawal ID: ${event.withdrawalRequestId}`
-                    })
-                    .setTimestamp(
-                        new Date(event.createdAt || Date.now())
-                    )
+                    .setFooter({ text: `Withdrawal ID: ${event.withdrawalRequestId}` })
+                    .setTimestamp(new Date(event.createdAt || Date.now()))
             ],
             components: [row]
         };
@@ -512,27 +427,21 @@ function auditEventMessage(event) {
                     .addFields(
                         {
                             name: "Player",
-                            value:
-                                `${event.playerName || "Player"}\n` +
-                                `User ID: \`${event.playerId}\``,
+                            value: `${event.playerName || "Player"}\nUser ID: \`${event.playerId}\``,
                             inline: true
                         },
                         {
                             name: "Chips Removed",
-                            value:
-                                `**${formatChips(event.amount)} chips**`,
+                            value: `**${formatChips(event.amount)} chips**`,
                             inline: true
                         },
                         {
                             name: "New Balance",
-                            value:
-                                `${formatChips(event.newBalance)} chips`,
+                            value: `${formatChips(event.newBalance)} chips`,
                             inline: true
                         }
                     )
-                    .setTimestamp(
-                        new Date(event.createdAt || Date.now())
-                    )
+                    .setTimestamp(new Date(event.createdAt || Date.now()))
             ]
         };
     }
@@ -541,71 +450,133 @@ function auditEventMessage(event) {
 }
 
 async function getChannel() {
-    const channel = await client.channels.fetch(
-        DISCORD_CHANNEL_ID
-    );
+    const channel = await client.channels.fetch(DISCORD_CHANNEL_ID);
 
     if (!channel || !channel.isTextBased()) {
-        throw new Error(
-            "DISCORD_CHANNEL_ID is not a text channel"
-        );
+        throw new Error("DISCORD_CHANNEL_ID is not a text channel");
     }
 
     return channel;
 }
 
+// Attempts to edit an already-posted request message in place when a
+// chip/withdrawal request gets handled somewhere other than the Discord
+// buttons (e.g. the in-game banker panel). Returns the edited message, or
+// null if there was nothing tracked to edit (falls back to posting fresh).
+async function tryEditTrackedMessage(channel, event) {
+    let messageId = null;
+
+    if (
+        (event.type === "banker-grant" || event.type === "chip-request-denied") &&
+        event.requestId
+    ) {
+        messageId = postedRequests.get(event.requestId);
+    } else if (
+        (event.type === "withdrawal-completed" || event.type === "withdrawal-denied") &&
+        event.withdrawalRequestId
+    ) {
+        messageId = postedWithdrawals.get(event.withdrawalRequestId);
+    }
+
+    if (!messageId) return null;
+
+    let message;
+    try {
+        message = await channel.messages.fetch(messageId);
+    } catch {
+        return null; // message gone / bot restarted since posting
+    }
+
+    const embed = message.embeds[0]
+        ? EmbedBuilder.from(message.embeds[0])
+        : new EmbedBuilder();
+
+    if (event.type === "banker-grant") {
+        embed
+            .setColor(event.grantType === "free" ? 0x3498db : 0x2ecc71)
+            .setTitle(
+                event.grantType === "free"
+                    ? "Chip Request Approved as Free"
+                    : "Chip Request Approved as Paid"
+            )
+            .addFields(
+                { name: "Handled By", value: event.handledBy || "Banker (in-app)", inline: false },
+                { name: "New Balance", value: `${formatChips(event.newBalance)} chips`, inline: false }
+            );
+    } else if (event.type === "chip-request-denied") {
+        embed
+            .setColor(0xe74c3c)
+            .setTitle("Chip Request Denied")
+            .addFields({ name: "Handled By", value: event.handledBy || "Banker (in-app)", inline: false });
+    } else if (event.type === "withdrawal-completed") {
+        embed
+            .setColor(0x3498db)
+            .setTitle("Withdrawal Completed")
+            .addFields(
+                { name: "Handled By", value: event.handledBy || "Banker (in-app)", inline: false },
+                { name: "Chips Removed", value: `**${formatChips(event.amount)} chips**`, inline: true },
+                { name: "Remaining Balance", value: `${formatChips(event.newBalance)} chips`, inline: true }
+            );
+    } else if (event.type === "withdrawal-denied") {
+        embed
+            .setColor(0xe74c3c)
+            .setTitle("Withdrawal Denied")
+            .addFields({ name: "Handled By", value: event.handledBy || "Banker (in-app)", inline: false });
+    }
+
+    await message.edit({ embeds: [embed], components: [] });
+
+    if (event.requestId) postedRequests.delete(event.requestId);
+    if (event.withdrawalRequestId) postedWithdrawals.delete(event.withdrawalRequestId);
+
+    return message;
+}
+
 async function syncRequests(channel) {
-    const data = await backendRequest(
-        "/discord/chips/requests"
-    );
+    const data = await backendRequest("/discord/chips/requests");
 
     for (const request of data.requests) {
-        if (postedRequests.has(request.requestId)) {
-            continue;
-        }
+        if (postedRequests.has(request.requestId)) continue;
 
-        const message = await channel.send(
-            requestMessage(request)
-        );
-
-        postedRequests.set(
-            request.requestId,
-            message.id
-        );
+        const message = await channel.send(requestMessage(request));
+        postedRequests.set(request.requestId, message.id);
     }
 }
 
 async function syncAuditEvents(channel) {
-    const data = await backendRequest(
-        "/discord/chips/events"
-    );
+    const data = await backendRequest("/discord/chips/events");
 
     for (const event of data.events || []) {
+        const edited = await tryEditTrackedMessage(channel, event);
+
+        if (edited) {
+            await backendRequest("/discord/chips/event-ack", {
+                method: "POST",
+                body: { eventId: event.eventId, discordMessageId: edited.id }
+            });
+            continue;
+        }
+
         const payload = auditEventMessage(event);
 
         if (!payload) {
-            await backendRequest(
-                "/discord/chips/event-ack",
-                {
-                    method: "POST",
-                    body: { eventId: event.eventId }
-                }
-            );
+            await backendRequest("/discord/chips/event-ack", {
+                method: "POST",
+                body: { eventId: event.eventId }
+            });
             continue;
         }
 
         const message = await channel.send(payload);
 
-        await backendRequest(
-            "/discord/chips/event-ack",
-            {
-                method: "POST",
-                body: {
-                    eventId: event.eventId,
-                    discordMessageId: message.id
-                }
-            }
-        );
+        if (event.type === "withdrawal-request") {
+            postedWithdrawals.set(event.withdrawalRequestId, message.id);
+        }
+
+        await backendRequest("/discord/chips/event-ack", {
+            method: "POST",
+            body: { eventId: event.eventId, discordMessageId: message.id }
+        });
     }
 }
 
@@ -623,304 +594,208 @@ async function syncAll() {
 }
 
 client.once("ready", async () => {
-    console.log(
-        `Logged in as ${client.user.tag}`
-    );
+    console.log(`Logged in as ${client.user.tag}`);
 
     await syncAll().catch(console.error);
 
     setInterval(
         () => syncAll().catch(console.error),
-        Math.max(
-            10,
-            Number(POLL_INTERVAL_SECONDS) || 15
-        ) * 1000
+        Math.max(10, Number(POLL_INTERVAL_SECONDS) || 15) * 1000
     );
 });
 
-client.on(
-    "interactionCreate",
-    async interaction => {
-        if (!interaction.isButton()) return;
+client.on("interactionCreate", async interaction => {
+    if (!interaction.isButton()) return;
 
-        const chipMatch =
-            interaction.customId.match(
-                /^chips:(approve-paid|approve-free|deny):([a-f0-9]+)$/
-            );
+    const chipMatch = interaction.customId.match(
+        /^chips:(approve-paid|approve-free|deny):([a-f0-9]+)$/
+    );
+    const withdrawalMatch = interaction.customId.match(
+        /^withdrawal:(complete|deny):([a-f0-9]+)$/
+    );
+    const dailySpinMatch = interaction.customId.match(
+        /^dailyspin:delivered:([a-f0-9]+)$/
+    );
 
-        const withdrawalMatch =
-            interaction.customId.match(
-                /^withdrawal:(complete|deny):([a-f0-9]+)$/
-            );
+    if (!chipMatch && !withdrawalMatch && !dailySpinMatch) return;
 
-        const dailySpinMatch =
-            interaction.customId.match(
-                /^dailyspin:delivered:([a-f0-9]+)$/
-            );
+    if (!canApprove(interaction)) {
+        await interaction.reply({
+            content: "You do not have permission to handle casino requests.",
+            ephemeral: true
+        });
+        return;
+    }
 
-        if (!chipMatch && !withdrawalMatch && !dailySpinMatch) {
-            return;
-        }
+    await interaction.deferUpdate();
 
-        if (!canApprove(interaction)) {
-            await interaction.reply({
-                content:
-                    "You do not have permission to handle casino requests.",
+    if (dailySpinMatch) {
+        const [, deliveryId] = dailySpinMatch;
+
+        try {
+            const result = await backendRequest("/discord/daily-spin/delivered", {
+                method: "POST",
+                body: {
+                    deliveryId,
+                    discordUserId: interaction.user.id,
+                    discordDisplayName: interaction.user.tag
+                }
+            });
+
+            const embed = EmbedBuilder.from(interaction.message.embeds[0])
+                .setColor(0x2ecc71)
+                .setTitle("Daily Spin Prize Delivered")
+                .spliceFields(2, 1, {
+                    name: "Status",
+                    value: "✅ Delivered in game",
+                    inline: false
+                })
+                .addFields({
+                    name: "Delivered By",
+                    value: `${interaction.user.tag}\n<@${interaction.user.id}>`,
+                    inline: false
+                })
+                .setTimestamp(new Date(result.delivery?.deliveredAt || Date.now()));
+
+            await interaction.message.edit({ embeds: [embed], components: [] });
+        } catch (error) {
+            console.error(error);
+            await interaction.followUp({
+                content: "Could not mark the daily-spin prize as delivered: " + error.message,
                 ephemeral: true
             });
-            return;
         }
 
-        await interaction.deferUpdate();
+        return;
+    }
 
-        if (dailySpinMatch) {
-            const [, deliveryId] = dailySpinMatch;
-
-            try {
-                const result = await backendRequest(
-                    "/discord/daily-spin/delivered",
-                    {
-                        method: "POST",
-                        body: {
-                            deliveryId,
-                            discordUserId: interaction.user.id,
-                            discordDisplayName: interaction.user.tag
-                        }
-                    }
-                );
-
-                const embed =
-                    EmbedBuilder.from(
-                        interaction.message.embeds[0]
-                    )
-                        .setColor(0x2ecc71)
-                        .setTitle("Daily Spin Prize Delivered")
-                        .spliceFields(2, 1, {
-                            name: "Status",
-                            value: "✅ Delivered in game",
-                            inline: false
-                        })
-                        .addFields({
-                            name: "Delivered By",
-                            value:
-                                `${interaction.user.tag}\n` +
-                                `<@${interaction.user.id}>`,
-                            inline: false
-                        })
-                        .setTimestamp(
-                            new Date(
-                                result.delivery?.deliveredAt || Date.now()
-                            )
-                        );
-
-                await interaction.message.edit({
-                    embeds: [embed],
-                    components: []
-                });
-            } catch (error) {
-                console.error(error);
-
-                await interaction.followUp({
-                    content:
-                        "Could not mark the daily-spin prize as delivered: " +
-                        error.message,
-                    ephemeral: true
-                });
-            }
-
-            return;
-        }
-
-        if (withdrawalMatch) {
-            const [, action, withdrawalRequestId] =
-                withdrawalMatch;
-
-            try {
-                const result = await backendRequest(
-                    action === "complete"
-                        ? "/discord/chips/withdrawal-complete"
-                        : "/discord/chips/withdrawal-deny",
-                    {
-                        method: "POST",
-                        body: {
-                            withdrawalRequestId,
-                            discordUserId:
-                                interaction.user.id,
-                            discordDisplayName:
-                                interaction.user.tag
-                        }
-                    }
-                );
-
-                const completed =
-                    action === "complete";
-
-                const embed =
-                    EmbedBuilder.from(
-                        interaction.message.embeds[0]
-                    )
-                        .setColor(
-                            completed
-                                ? 0x2ecc71
-                                : 0xe74c3c
-                        )
-                        .setTitle(
-                            completed
-                                ? "Withdrawal Completed"
-                                : "Withdrawal Denied"
-                        )
-                        .addFields({
-                            name: "Handled By",
-                            value:
-                                `${interaction.user.tag}\n` +
-                                `<@${interaction.user.id}>`,
-                            inline: false
-                        });
-
-                if (completed) {
-                    embed.addFields(
-                        {
-                            name: "Chips Removed",
-                            value:
-                                `**${formatChips(
-                                    result.amountRemoved
-                                )} chips**`,
-                            inline: true
-                        },
-                        {
-                            name: "Remaining Balance",
-                            value:
-                                `${formatChips(
-                                    result.newBalance
-                                )} chips`,
-                            inline: true
-                        }
-                    );
-                } else {
-                    embed.addFields({
-                        name: "Decision",
-                        value:
-                            "No chips were removed from the player's balance.",
-                        inline: false
-                    });
-                }
-
-                await interaction.message.edit({
-                    embeds: [embed],
-                    components: []
-                });
-            } catch (error) {
-                console.error(error);
-
-                await interaction.followUp({
-                    content:
-                        `Could not ${action} withdrawal: ` +
-                        error.message,
-                    ephemeral: true
-                });
-            }
-
-            return;
-        }
-
-        const [, action, requestId] = chipMatch;
-
-        const approving = action !== "deny";
-        const grantType =
-            action === "approve-free"
-                ? "free"
-                : "paid";
+    if (withdrawalMatch) {
+        const [, action, withdrawalRequestId] = withdrawalMatch;
 
         try {
             const result = await backendRequest(
-                approving
-                    ? "/discord/chips/approve"
-                    : "/discord/chips/deny",
+                action === "complete"
+                    ? "/discord/chips/withdrawal-complete"
+                    : "/discord/chips/withdrawal-deny",
                 {
                     method: "POST",
                     body: {
-                        requestId,
-                        grantType: approving
-                            ? grantType
-                            : undefined,
-                        discordUserId:
-                            interaction.user.id,
-                        discordDisplayName:
-                            interaction.user.tag
+                        withdrawalRequestId,
+                        discordUserId: interaction.user.id,
+                        discordDisplayName: interaction.user.tag
                     }
                 }
             );
 
-            const embed =
-                EmbedBuilder.from(
-                    interaction.message.embeds[0]
-                )
-                    .setColor(
-                        approving
-                            ? grantType === "free"
-                                ? 0x3498db
-                                : 0x2ecc71
-                            : 0xe74c3c
-                    )
-                    .setTitle(
-                        approving
-                            ? grantType === "free"
-                                ? "Chip Request Approved as Free"
-                                : "Chip Request Approved as Paid"
-                            : "Chip Request Denied"
-                    )
-                    .addFields({
-                        name: "Handled By",
-                        value:
-                            `${interaction.user.tag}\n` +
-                            `<@${interaction.user.id}>`,
-                        inline: false
-                    });
+            const completed = action === "complete";
 
-            if (approving) {
+            const embed = EmbedBuilder.from(interaction.message.embeds[0])
+                .setColor(completed ? 0x2ecc71 : 0xe74c3c)
+                .setTitle(completed ? "Withdrawal Completed" : "Withdrawal Denied")
+                .addFields({
+                    name: "Handled By",
+                    value: `${interaction.user.tag}\n<@${interaction.user.id}>`,
+                    inline: false
+                });
+
+            if (completed) {
+                embed.addFields(
+                    {
+                        name: "Chips Removed",
+                        value: `**${formatChips(result.amountRemoved)} chips**`,
+                        inline: true
+                    },
+                    {
+                        name: "Remaining Balance",
+                        value: `${formatChips(result.newBalance)} chips`,
+                        inline: true
+                    }
+                );
+            } else {
                 embed.addFields({
-                    name: "Grant Type",
-                    value:
-                        grantType === "free"
-                            ? "🎁 Free chips — the player did not pay"
-                            : "💷 Paid chips — the player paid for these chips",
+                    name: "Decision",
+                    value: "No chips were removed from the player's balance.",
                     inline: false
                 });
             }
 
-            if (
-                approving &&
-                result.newBalance !== undefined
-            ) {
-                embed.addFields({
-                    name: "New Balance",
-                    value:
-                        `${formatChips(
-                            result.newBalance
-                        )} chips`,
-                    inline: false
-                });
-            }
-
-            await interaction.message.edit({
-                embeds: [embed],
-                components: []
-            });
-
-            postedRequests.delete(requestId);
-
-            await syncAll().catch(console.error);
+            await interaction.message.edit({ embeds: [embed], components: [] });
+            postedWithdrawals.delete(withdrawalRequestId);
         } catch (error) {
             console.error(error);
-
             await interaction.followUp({
-                content:
-                    `Could not ${action} request: ` +
-                    error.message,
+                content: `Could not ${action} withdrawal: ` + error.message,
                 ephemeral: true
             });
         }
+
+        return;
     }
-);
+
+    const [, action, requestId] = chipMatch;
+    const approving = action !== "deny";
+    const grantType = action === "approve-free" ? "free" : "paid";
+
+    try {
+        const result = await backendRequest(
+            approving ? "/discord/chips/approve" : "/discord/chips/deny",
+            {
+                method: "POST",
+                body: {
+                    requestId,
+                    grantType: approving ? grantType : undefined,
+                    discordUserId: interaction.user.id,
+                    discordDisplayName: interaction.user.tag
+                }
+            }
+        );
+
+        const embed = EmbedBuilder.from(interaction.message.embeds[0])
+            .setColor(approving ? (grantType === "free" ? 0x3498db : 0x2ecc71) : 0xe74c3c)
+            .setTitle(
+                approving
+                    ? grantType === "free"
+                        ? "Chip Request Approved as Free"
+                        : "Chip Request Approved as Paid"
+                    : "Chip Request Denied"
+            )
+            .addFields({
+                name: "Handled By",
+                value: `${interaction.user.tag}\n<@${interaction.user.id}>`,
+                inline: false
+            });
+
+        if (approving) {
+            embed.addFields({
+                name: "Grant Type",
+                value:
+                    grantType === "free"
+                        ? "🎁 Free chips — the player did not pay"
+                        : "💷 Paid chips — the player paid for these chips",
+                inline: false
+            });
+        }
+
+        if (approving && result.newBalance !== undefined) {
+            embed.addFields({
+                name: "New Balance",
+                value: `${formatChips(result.newBalance)} chips`,
+                inline: false
+            });
+        }
+
+        await interaction.message.edit({ embeds: [embed], components: [] });
+
+        postedRequests.delete(requestId);
+
+        await syncAll().catch(console.error);
+    } catch (error) {
+        console.error(error);
+        await interaction.followUp({
+            content: `Could not ${action} request: ` + error.message,
+            ephemeral: true
+        });
+    }
+});
 
 client.login(DISCORD_BOT_TOKEN);
